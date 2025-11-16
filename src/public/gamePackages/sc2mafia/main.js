@@ -1,4 +1,4 @@
-import { originalGameData, Vote, Faction, Team, Role, EffectBase, getRoleTags } from "./gameData.js"
+import { originalGameData, Vote, Faction, Team, Role, EffectManager, getRoleTags } from "./gameData.js"
 import { getRandomElement, log } from "./utils.js"
 
 const gameDataPath = import.meta.dir + '/public/gameData/'
@@ -12,13 +12,14 @@ export function start(room){
     return new Game(room)
 }
 
-class Game extends EffectBase{
+class Game{
     constructor(room){
-        super()
         this.playerList = room.user_list.map(user => new Player(this, user))
         this.host = this.playerList.find(p => p.user === room.host)
         this.room = room
         this.status = "init"
+
+        this.effects = new EffectManager()
 
         this.voteSet = originalGameData.votes.map(v => new Vote(this, v))
 
@@ -248,15 +249,15 @@ class Game extends EffectBase{
                         }
                     break
                     case 'Suicide':
-                        // fixme: 我发现这个地方有一个问题，玩家有可能可以通过反复的使用自杀指令来判断自己是不是被小丑亡语选中为自杀对象了
+                        // FIXME: 我发现这个地方有一个问题，玩家有可能可以通过反复的使用自杀指令来判断自己是不是被小丑亡语选中为自杀对象了
                         // ...我们先不要想太多，等小丑角色做出来再说吧。
                         // if((this.dayCount ?? 0) >= 3)
-                        if(player.hasEffect('Suicide') === false){
-                            player.addEffect('Suicide')
+                        if(player.effects.has('Suicide') === false){
+                            player.effects.add('Suicide')
                             player.sendEvent('YouDecidedToCommitSuicide')
                         }
                         else{
-                            player.removeEffect('Suicide')
+                            player.effects.remove('Suicide')
                             player.sendEvent('YouGiveUpSuicide')
                         }
 
@@ -287,7 +288,7 @@ class Game extends EffectBase{
         p.sendEvent("SetFactionSet", originalGameData.factions)
         p.sendEvent("SetTagSet", originalGameData.tags)
         p.sendEvent("SetRoleSet", originalGameData.roles)
-        p.sendEvent("SetGlobalEffects", this.effetcs.map(e => e.name))
+        p.sendEvent("SetGlobalEffects", this.effects.map(e => e.name))
         p.sendEvent("InitCompleted")
 
         p.isReady = true
@@ -477,7 +478,7 @@ class Game extends EffectBase{
                         const resultIndex = vote.getResult()
                         if(resultIndex !== undefined){
                             const lynchTarget = game.playerList[resultIndex]
-                            if(game.hasEffect('MarshallMassExecution') === false){
+                            if(game.effects.has('MarshallMassExecution') === false){
                                 // game.sendEventToAll("SetLynchTarget", lynchTarget)
                                 if(game.setting.enableTrial){
                                     if(game.setting.pauseDayTimerDuringTrial === true){
@@ -513,7 +514,7 @@ class Game extends EffectBase{
                                 }
                             }
                             else{
-                                if(game.getEffect('MarshallMassExecution').remainingExecutions > 0){
+                                if(game.effects.get('MarshallMassExecution').remainingExecutions > 0){
                                     // 执法长的处决阶段要暂停白天计时器
                                     this.tempDayStageCache = game.gameStage
                                     this.tempDayStageCache.pause()
@@ -524,13 +525,13 @@ class Game extends EffectBase{
                                     lynchTarget.deathReason = ["Execution"]
                             
                                     game.recentlyDeadPlayers.push(lynchTarget)
-                                    game.getEffect('MarshallMassExecution').remainingExecutions --
+                                    game.effects.get('MarshallMassExecution').remainingExecutions --
                                     // 等待处刑/遗言阶段结束后，接下来有两种可能：
                                     // 1. 白天已经结束了 或是 已经用完了处决次数
                                     // 2. 还没用完处决次数且白天也没结束
-                                    if(game.dayOver === true || game.getEffect('MarshallMassExecution').remainingExecutions === 0){
+                                    if(game.dayOver === true || game.effects.get('MarshallMassExecution').remainingExecutions === 0){
                                         // 如果是用完了处决次数
-                                        if(game.getEffect('MarshallMassExecution').remainingExecutions === 0){
+                                        if(game.effects.get('MarshallMassExecution').remainingExecutions === 0){
                                             this.tempDayStageCache.end()
                                         }
                                         this.tempDayStageCache = undefined
@@ -538,7 +539,7 @@ class Game extends EffectBase{
                                         game.sendEventToAll('SetRecentlyDeadPlayers', game.recentlyDeadPlayers.map(p => game.getPlayerDeathDeclearData(p)))
                                         await game.newGameStage("animation/execution/deathDeclear", game.recentlyDeadPlayers.length * 0.1)
                                         await game.newGameStage("day/execution/discussion", 0.2)
-                                        game.removeEffect('MarshallMassExecution')
+                                        game.effects.remove('MarshallMassExecution')
                                         await game.victoryCheck()
 
                                         if(game.status !== "end")
@@ -590,13 +591,13 @@ class Game extends EffectBase{
                 this.tempDayStageCache = undefined
 
                 if(!game.inTrialOrExecutionStage){
-                    if(game.hasEffect('MarshallMassExecution') === false){
+                    if(game.effects.has('MarshallMassExecution') === false){
                         game.nightCycle()
                     }else{
                         game.sendEventToAll('SetRecentlyDeadPlayers', game.recentlyDeadPlayers.map(p => game.getPlayerDeathDeclearData(p)))
                         await game.newGameStage("animation/execution/deathDeclear", game.recentlyDeadPlayers.length * 0.1)
                         await game.newGameStage("day/execution/discussion", 0.2)
-                        game.removeEffect('MarshallMassExecution')
+                        game.effects.remove('MarshallMassExecution')
                         await game.victoryCheck()
 
                         if(game.status !== "end"){
@@ -610,11 +611,11 @@ class Game extends EffectBase{
                 game.sendEventToAll('PlayerUsesImmediateAbility', {abilityName:ability.name, playerIndex:player.index})
                 switch(ability.name){
                     case'RevealAsMayor':{
-                        player.role.addEffect('HasPublicVoteWeight', Infinity, {voteWeight:3})
+                        player.role.effects.add('HasPublicVoteWeight', Infinity, {voteWeight:3})
                     break}
 
                     case'RevealAsMarshall':{
-                        game.addEffect('MarshallMassExecution', 1, {remainingExecutions:3})
+                        game.effects.add('MarshallMassExecution', 1, {remainingExecutions:3})
 
                         // let marshallExecutionNumber = 3
                         // // 执法长使用技能的时候只有两种情况：
@@ -835,7 +836,7 @@ class Game extends EffectBase{
                     sendActionEvent(a.target, 'SomeoneIsTryingToDoSomethingToYou', {actionName:a.name})
                 }
                 else if(a.target.hasEffect('ImmuneToRoleBlock') === false){
-                    a.target.addEffect('RoleBlocked', 1)
+                    a.target.effects.add('RoleBlocked', 1)
                     sendActionEvent(a.target, 'YourRoleIsBlocked')
                 }
                 else{
@@ -886,7 +887,7 @@ class Game extends EffectBase{
         const silenceActions = this.nightActionSequence.filter(a => a.name === 'Silence')
         silenceActions.forEach(a => sendActionEvent(a.origin, 'YouTakeAction', {actionName:a.name}))
         silenceActions.forEach(a => {
-            a.target.addEffect_skipThisTurn('Silenced', 1)
+            a.target.effects.add_skipThisRound('Silenced', 1)
             sendActionEvent(a.target, 'YouWereSilenced')
         })
 
@@ -894,7 +895,7 @@ class Game extends EffectBase{
         const bulletProofActions = this.nightActionSequence.filter(a => a.name === 'BulletProof')
         bulletProofActions.forEach(a => sendActionEvent(a.origin, 'YouTakeAction', {actionName:a.name}))
         bulletProofActions.forEach(a => {
-            a.origin.addEffect('ImmuneToAttack', 1)
+            a.origin.effects.add('ImmuneToAttack', 1)
         })
 
         // Attack and Protects
@@ -910,7 +911,7 @@ class Game extends EffectBase{
         const armedGuardActions = this.nightActionSequence.filter(a => a.name === 'ArmedGuard')
         armedGuardActions.forEach(a => sendActionEvent(a.origin, 'YouTakeAction', {actionName:a.name}))
         armedGuardActions.forEach(a => {
-            a.origin.addEffect('ImmuneToAttack', 1)
+            a.origin.effects.add('ImmuneToAttack', 1)
             const visitors = this.nightActionSequence.filter(targetIncludes(a.origin)).map(na => na.origin)
             visitors.forEach(v =>{
                 attackActions.push({
@@ -1111,7 +1112,7 @@ class Game extends EffectBase{
             }
         }
 
-        this.reduceEffectsDurationTurns()
+        this.reduceEffectsDurationRounds()
 
         function sendActionEvent(target, actionName, data){
             if(data && 'name' in data)
@@ -1409,7 +1410,7 @@ class Game extends EffectBase{
         player.user = undefined
 
         if(player.isAlive){
-            player.addEffect('Suicide')
+            player.effects.add('Suicide')
         }
 
         if(this.notStartedYet){
@@ -1428,31 +1429,31 @@ class Game extends EffectBase{
         }
     }
 
-    addEffect(name, durationTurns = Infinity, extraData = undefined){
-        super.addEffect(name, durationTurns, extraData)
+    addEffect(name, durationRounds = Infinity, extraData = undefined){
+        this.effects.add(name, durationRounds, extraData)
 
-        this.sendEventToAll("SetGlobalEffects", this.effetcs.map(e => e.name))
+        this.sendEventToAll("SetGlobalEffects", this.effects.map(e => e.name))
     }
-    addEffect_skipThisTurn(name, durationTurns, extraData){
-        super.addEffect_skipThisTurn(name, durationTurns, extraData)
+    addEffect_skipThisRound(name, durationRounds, extraData){
+        this.effects.add_skipThisRound(name, durationRounds, extraData)
 
-        this.sendEventToAll("SetGlobalEffects", this.effetcs.map(e => e.name))
+        this.sendEventToAll("SetGlobalEffects", this.effects.map(e => e.name))
     }
     removeEffect(eName){
-        super.removeEffect(eName)
+        this.effects.remove(eName)
 
-        this.sendEventToAll("SetGlobalEffects", this.effetcs.map(e => e.name))
+        this.sendEventToAll("SetGlobalEffects", this.effects.map(e => e.name))
     }
 
-    reduceEffectsDurationTurns(){
-        this.effetcs.forEach(e => e.durationTurns -= 1)
+    reduceEffectsDurationRounds(){
+        this.effects.forEach(e => e.durationRounds -= 1)
 
-        if(this.effetcs.some(e => e.durationTurns <= 0)){
-            this.effetcs = this.effetcs.filter(e => e.durationTurns > 0)
-            this.sendEventToAll("SetGlobalEffects", this.effetcs.map(e => e.name))
+        if(this.effects.some(e => e.durationRounds <= 0)){
+            this.effects = this.effects.filter(e => e.durationRounds > 0)
+            this.sendEventToAll("SetGlobalEffects", this.effects.map(e => e.name))
         }
 
-        this.onlinePlayerList.forEach(p => p.reduceEffectsDurationTurns())
+        this.onlinePlayerList.forEach(p => p.reduceEffectsDurationRounds())
     }
 }
 
@@ -1533,12 +1534,14 @@ function calculateProbability(roleName, possibleRoles) {
     return probability
 }
 
-class Player extends EffectBase{
+class Player{
     constructor(game, user){
-        super()
         this.user = user
         this.playedRoleNameRecord = []
         this.game = game
+
+        this.effects = new EffectManager()
+
     }
 
     get uuid(){
@@ -1621,15 +1624,14 @@ class Player extends EffectBase{
     }
 
     hasEffect(eName){
-        return (this.effetcs.map(e => e.name).includes(eName) || this.role.hasEffect(eName))
+        return (this.effects.map(e => e.name).includes(eName) || this.role.effects.has(eName))
     }
     searchEffect(searchFunction){
-        return this.effetcs.find(searchFunction) ?? this.role.searchEffect(searchFunction)
+        return this.effects.find(searchFunction) ?? this.role.effects.search(searchFunction)
     }
-    reduceEffectsDurationTurns(){
-        super.reduceEffectsDurationTurns()
-
-        this.role.reduceEffectsDurationTurns()
+    reduceEffectsDurationRounds(){
+        this.effects.reduceDurationRounds()
+        this.role.effects.reduceDurationRounds()
     }
 
     toJSON_includeRole(){

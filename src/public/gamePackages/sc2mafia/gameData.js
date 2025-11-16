@@ -454,7 +454,7 @@ export const originalGameData = {
                 verify(game, userIndex, targetIndex, previousTargetIndex){
                     const userIsAlive = game.playerList[userIndex].isAlive
                     const inDayStage = game.status.split('/').includes('day')
-                    const userHasNotBeenSilenced = game.playerList[userIndex].hasEffect('Silenced') === false
+                    const userHasNotBeenSilenced = game.playerList[userIndex].effects.has('Silenced') === false
                     return userIsAlive && inDayStage && userHasNotBeenSilenced
                 },
 
@@ -479,7 +479,7 @@ export const originalGameData = {
                     const userIsAlive = game.playerList[userIndex].isAlive
                     const inDayStage = game.status.split('/').includes('day')
                     const notInTrialOrExecutionStage = game.inTrialOrExecutionStage === false
-                    const userHasNotBeenSilenced = game.playerList[userIndex].hasEffect('Silenced') === false
+                    const userHasNotBeenSilenced = game.playerList[userIndex].effects.has('Silenced') === false
                     return userIsAlive && inDayStage && userHasNotBeenSilenced && notInTrialOrExecutionStage
                 },
 
@@ -658,7 +658,7 @@ class AbilityBase{
         this.state = {
             unableToUseCheckFunctions:[
                 function(){
-                    return this.forceDisableTurns > 0
+                    return this.forceDisableRounds > 0
                 },
             ],
             get unableToUse(){
@@ -666,7 +666,7 @@ class AbilityBase{
             },
             consecutiveUsageCount:0,
             usageCount:0,
-            forceDisableTurns:0,
+            forceDisableRounds:0,
         }
 
         if(roleModifyObject){
@@ -705,13 +705,13 @@ class AbilityBase{
                 }
             }
 
-            // hasAbilityForceDisableTurn_*_AtStart
-            if(roleModifyObjectKeyNames.filter(keyName => keyName.startsWith('hasAbilityForceDisableTurn_')).length > 0){
-                const options = roleModifyObjectKeyNames.filter(keyName => keyName.startsWith('hasAbilityForceDisableTurn_'))
+            // hasAbilityForceDisableRound_*_AtStart
+            if(roleModifyObjectKeyNames.filter(keyName => keyName.startsWith('hasAbilityForceDisableRound_')).length > 0){
+                const options = roleModifyObjectKeyNames.filter(keyName => keyName.startsWith('hasAbilityForceDisableRound_'))
                 for(const oName of options){
                     if(roleModifyObject[oName]){
-                        const extraForceDisableTurn = extractNumbers(oName)[0]
-                        this.state.forceDisableTurns += extraForceDisableTurn
+                        const extraForceDisableRound = extractNumbers(oName)[0]
+                        this.state.forceDisableRounds += extraForceDisableRound
 
                         break
                     }
@@ -746,9 +746,9 @@ class AbilityBase{
         this.state.consecutiveUsageCount = 0
     }
 
-    reduceForceDisableTurns(){
-        if(this.state.forceDisableTurns > 0)
-            this.state.forceDisableTurns --
+    reduceForceDisableRounds(){
+        if(this.state.forceDisableRounds > 0)
+            this.state.forceDisableRounds --
     }
 }
 
@@ -772,6 +772,9 @@ class Ability extends AbilityBase{
         if(this.data === undefined) console.error(`Unknow Ability: ${abilityName}`);
         if(this.data.verify === undefined) console.error(`Ability: ${abilityName} has no 'verify' Function`);
 
+        // 在大多数情况下，我们的代理类是想要拦截data里面没有的内容的访问，比如说data里面没有get方法，但是代理对象有的时候，
+        // proxy就会将对get的访问转移给代理对象，但是在这里，我们的操作则截然相反，
+        // 即，如果data里面有函数可用，则优先调用data里面的函数，而忽视本身的函数。
         return new Proxy(this, {
             get(target, prop, receiver) {
                 return prop in target.data  === false ? target[prop] : 
@@ -781,37 +784,44 @@ class Ability extends AbilityBase{
     }
 }
 
-export class EffectBase{
-    effetcs = []
-    addEffect(name, durationTurns = Infinity, extraData = undefined){
-        this.effetcs.push({...(extraData || {}), name, durationTurns})
+export class EffectManager{
+    constructor(){
+        this.effects = []
+        return new Proxy(this, {
+            get(target, prop) {
+                return prop in target ? target[prop] : target.effects[prop]
+            }
+        })
     }
-    addEffect_skipThisTurn(name, durationTurns, extraData){
-        this.addEffect(name, (durationTurns+1), extraData)
+
+    add(name, durationRounds = Infinity, extraData = undefined){
+        this.effects.push({...(extraData || {}), name, durationRounds})
     }
-    removeEffect(eName){
-        this.effetcs = this.effetcs.filter(e => e.name !== eName)
+    add_skipThisRound(name, durationRounds, extraData){
+        this.effects.add(name, (durationRounds+1), extraData)
     }
-    getEffect(eName){
-        return this.searchEffect(e => e.name === eName)
+    remove(eName){
+        this.effects = this.effects.filter(e => e.name !== eName)
     }
-    hasEffect(eName){
-        return this.effetcs.map(e => e.name).includes(eName)
+    get(eName){
+        return this.search(e => e.name === eName)
     }
-    searchEffect(searchFunction){
-        return this.effetcs.find(searchFunction)
+    has(eName){
+        return this.effects.map(e => e.name).includes(eName)
     }
-    reduceEffectsDurationTurns(){
-        this.effetcs.forEach(e => e.durationTurns -= 1)
-        this.effetcs = this.effetcs.filter(e => e.durationTurns > 0)
+    search(searchFunction){
+        return this.effects.find(searchFunction)
+    }
+    reduceDurationRounds(){
+        this.effects.forEach(e => e.durationRounds -= 1)
+        this.effects = this.effects.filter(e => e.durationRounds > 0)
     }
 }
 
 // 仁慈的父，我已坠入，看不见罪的国度，请原谅我的自负~
-export class Role extends EffectBase{
+export class Role{
     constructor(game, player, roleData){
-        super()
-        this.game = game
+        this.game   = game
         this.player = player
         this.name   = roleData.name
 
@@ -826,12 +836,14 @@ export class Role extends EffectBase{
 
         const abilityNames = defaultRoleData.abilityNames ?? []
 
+        this.effects = new EffectManager()
+
         if(this.modifyObject){
             for(const keyName in this.modifyObject ){
                 if(keyName.startsWith('hasEffect_')){
                     const effectName = keyName.split('_')[1]
                     if(this.modifyObject[keyName])
-                        this.addEffect(effectName)
+                        this.effects.add(effectName)
                 }
                 else if(keyName.startsWith('hasAbility_')){
                     const extraAbilityName = keyName.split('_')[1]
@@ -842,7 +854,7 @@ export class Role extends EffectBase{
         }
 
         if('effectNames' in this.data){
-            this.data.effectNames.forEach(effectName => this.addEffect(effectName))
+            this.data.effectNames.forEach(effectName => this.effects.add(effectName))
         }
 
         if(abilityNames !== undefined){
@@ -896,13 +908,13 @@ export class Role extends EffectBase{
         return this.data.victoryCheck?.(this.game, this.player)
     }
 
-    reduceEffectsDurationTurns(){
-        super.reduceEffectsDurationTurns()
+    reduceEffectsDurationRounds(){
+        this.effects.reduceDurationRounds()
 
-        this.abilities?.forEach(a => a.reduceForceDisableTurns())
+        this.abilities?.forEach(a => a.reduceForceDisableRounds())
     }
-    addAbilityForceDisableTurns(durationTurns = 0){
-        this.abilities.forEach(a => a.state.forceDisableTurns += durationTurns)
+    addAbilityForceDisableRounds(durationRounds = 0){
+        this.abilities.forEach(a => a.state.forceDisableRounds += durationRounds)
     }
 
     toJSON(){
@@ -969,7 +981,7 @@ export class Vote{
                     voteWeight = (p.team.playerList.length + 1)
                 }
                 else if(this.team === undefined){
-                    voteWeight = p.getEffect('HasPublicVoteWeight')?.voteWeight ?? 1
+                    voteWeight = p.effects.get('HasPublicVoteWeight')?.voteWeight ?? 1
                 }
 
                 count[targetIndex] += voteWeight
